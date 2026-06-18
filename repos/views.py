@@ -1,0 +1,137 @@
+from django.shortcuts import get_object_or_404
+from django_fsm import TransitionNotAllowed
+from rest_framework import generics, status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from reviews.models import Review, ReviewComment
+from reviews.serializers import ReviewCommentSerializer, SubmitReviewSerializer
+from users.permissions import IsReviewerOrAdmin
+
+from .models import PRTransitionHistory, PullRequest, Repository
+from .serializers import (
+    CommitSerializer,
+    PRTransitionHistorySerializer,
+    PRTransitionSerializer,
+    PullRequestSerializer,
+    RepositorySerializer,
+)
+
+
+class RepositoryListCreate(generics.ListCreateAPIView):
+    serializer_class = RepositorySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Repository.objects.select_related("owner").all()
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+
+
+class RepositoryDetail(generics.RetrieveAPIView):
+    queryset = Repository.objects.select_related("owner")
+    serializer_class = RepositorySerializer
+    permission_classes = [IsAuthenticated]
+
+
+class PRListCreate(generics.ListCreateAPIView):
+    serializer_class = PullRequestSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return PullRequest.objects.filter(
+            repo_id=self.kwargs["repo_id"]
+        ).select_related("author", "repo")
+
+    def perform_create(self, serializer):
+        repo = get_object_or_404(Repository, pk=self.kwargs["repo_id"])
+        serializer.save(author=self.request.user, repo=repo)
+
+
+class PRDetail(generics.RetrieveAPIView):
+    queryset = PullRequest.objects.select_related("author", "repo")
+    serializer_class = PullRequestSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class PRDiffView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        pr = get_object_or_404(PullRequest, pk=pk)
+        commits = pr.commits.prefetch_related("diff_files").order_by("committed_at")
+        serializer = CommitSerializer(commits, many=True)
+        return Response(serializer.data)
+
+
+class PRCommentCreate(generics.CreateAPIView):
+    serializer_class = ReviewCommentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        pr = get_object_or_404(PullRequest, pk=self.kwargs["pk"])
+        review, _ = Review.objects.get_or_create(
+            pr=pr, reviewer=self.request.user
+        )
+        serializer.save(review=review)
+
+
+class PRReviewSubmit(APIView):
+    permission_classes = [IsAuthenticated, IsReviewerOrAdmin]
+
+    def post(self, request, pk):
+        pr = get_object_or_404(PullRequest, pk=pk)
+        serializer = SubmitReviewSerializer(
+            data=request.data,
+            context={"request": request, "pr": pr},
+        )
+        serializer.is_valid(raise_exception=True)
+        review = serializer.save()
+        return Response(
+            {
+                "id": review.id,
+                "status": review.status,
+                "submitted_at": review.submitted_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PRTransitionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        pr = get_object_or_404(PullRequest, pk=pk)
+        serializer = PRTransitionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        transition_name = serializer.validated_data["transition"]
+        method = getattr(pr, PullRequest.TRANSITION_MAP[transition_name])
+        from_status = pr.status
+
+        try:
+            method()
+        except TransitionNotAllowed:
+            return Response(
+                {"detail": f"Transition '{transition_name}' is not allowed from state '{pr.status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pr.save()
+        PRTransitionHistory.objects.create(
+            pr=pr,
+            from_status=from_status,
+            to_status=pr.status,
+            actor=request.user,
+        )
+        return Response(PullRequestSerializer(pr).data)
+
+
+class PRTransitionHistoryView(generics.ListAPIView):
+    serializer_class = PRTransitionHistorySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return PRTransitionHistory.objects.filter(pr_id=self.kwargs["pk"])

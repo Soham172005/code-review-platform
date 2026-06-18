@@ -1,0 +1,13 @@
+Django==4.2.*
+djangorestframework
+psycopg2-binary
+python-decouple
+django-fsm
+djangorestframework-simplejwt
+celery[redis]
+GitPython
+social-auth-app-django
+
+# Dev / test
+pytest-django
+factory_boy
