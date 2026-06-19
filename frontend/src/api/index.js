@@ -107,4 +107,14 @@ export const addComment = (prId, data) =>
 export const resolveComment = (commentId) =>
   api.post(`/reviews/comments/${commentId}/resolve/`)
 
+// Notifications
+export const getNotifications = (unreadOnly = false) =>
+  api.get('/notifications/', { params: unreadOnly ? { unread: 'true' } : {} })
+
+export const markNotificationRead = (id) =>
+  api.patch(`/notifications/${id}/read/`)
+
+export const markAllNotificationsRead = () =>
+  api.post('/notifications/mark-all-read/')
+
 export default api

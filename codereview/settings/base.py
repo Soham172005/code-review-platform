@@ -30,7 +30,7 @@ LOCAL_APPS = [
     "users",
     "repos",
     "reviews",
-    "notifications",
+    "notifications.apps.NotificationsConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -153,3 +153,9 @@ SOCIAL_AUTH_PIPELINE = (
 )
 
 SOCIAL_AUTH_USER_MODEL = AUTH_USER_MODEL
+
+# GitHub webhooks
+GITHUB_WEBHOOK_SECRET = config("GITHUB_WEBHOOK_SECRET", default="dev-secret")
+
+# Email
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@codereview.local")

@@ -4,7 +4,8 @@
       "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe manage.py makemigrations repos reviews 2>&1)",
       "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe manage.py migrate 2>&1)",
       "Bash(npm install *)",
-      "PowerShell(Remove-Item *)"
+      "PowerShell(Remove-Item *)",
+      "PowerShell(Set-Location *)"
     ]
   }
 }

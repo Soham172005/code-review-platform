@@ -19,4 +19,6 @@ urlpatterns = [
     path("api/prs/<int:pk>/reviews/", repo_views.PRReviewSubmit.as_view(), name="pr-review-submit"),
     path("api/prs/<int:pk>/transition/", repo_views.PRTransitionView.as_view(), name="pr-transition"),
     path("api/prs/<int:pk>/history/", repo_views.PRTransitionHistoryView.as_view(), name="pr-history"),
+    # Webhooks
+    path("api/webhooks/github/", repo_views.GitHubWebhookView.as_view(), name="github-webhook"),
 ]

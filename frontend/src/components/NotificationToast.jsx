@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, createContext, useContext } from 'react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../context/AuthContext'
 import useSSE from '../hooks/useSSE'
@@ -11,9 +11,17 @@ const EVENT_MESSAGES = {
   comment_resolved: 'A comment was resolved',
 }
 
-export default function NotificationToast() {
+const NotificationContext = createContext({ unreadCount: 0, resetCount: () => {} })
+
+export function useNotificationCount() {
+  return useContext(NotificationContext)
+}
+
+export function NotificationProvider({ children }) {
   const { user } = useAuth()
-  const event = useSSE(user ? '/api/notifications/stream/' : null)
+  const { event, unreadCount, resetCount } = useSSE(
+    user ? '/api/notifications/stream/' : null
+  )
 
   useEffect(() => {
     if (event) {
@@ -24,5 +32,13 @@ export default function NotificationToast() {
     }
   }, [event])
 
+  return (
+    <NotificationContext.Provider value={{ unreadCount, resetCount }}>
+      {children}
+    </NotificationContext.Provider>
+  )
+}
+
+export default function NotificationToast() {
   return null
 }

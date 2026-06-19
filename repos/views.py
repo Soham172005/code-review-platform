@@ -1,7 +1,9 @@
+import json
+
 from django.shortcuts import get_object_or_404
 from django_fsm import TransitionNotAllowed
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,6 +19,7 @@ from .serializers import (
     PullRequestSerializer,
     RepositorySerializer,
 )
+from .webhooks import verify_signature
 
 
 class RepositoryListCreate(generics.ListCreateAPIView):
@@ -135,3 +138,39 @@ class PRTransitionHistoryView(generics.ListAPIView):
 
     def get_queryset(self):
         return PRTransitionHistory.objects.filter(pr_id=self.kwargs["pk"])
+
+
+class GitHubWebhookView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        signature = request.META.get("HTTP_X_HUB_SIGNATURE_256", "")
+        raw_body = request.body
+
+        if not signature:
+            return Response(
+                {"detail": "Missing X-Hub-Signature-256 header."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not verify_signature(raw_body, signature):
+            return Response(
+                {"detail": "Invalid signature."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        event_type = request.META.get("HTTP_X_GITHUB_EVENT", "")
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return Response(
+                {"detail": "Invalid JSON."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from repos.tasks import process_webhook_event
+
+        process_webhook_event.delay(event_type, payload)
+
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)

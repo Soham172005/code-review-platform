@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
+import { useNotificationCount } from './NotificationToast'
 import {
   FolderIcon,
   CodeBracketSquareIcon,
@@ -12,19 +13,20 @@ import {
 } from '@heroicons/react/24/outline'
 import { cn } from '../utils/classNames'
 
-const NAV_ITEMS = [
-  { to: '/', icon: FolderIcon, label: 'Repositories', end: true },
-  { to: '/prs', icon: CodeBracketSquareIcon, label: 'Pull Requests' },
-  { to: '/notifications', icon: BellIcon, label: 'Notifications' },
-]
-
 export default function Sidebar({ collapsed, onToggle }) {
   const { user, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
+  const { unreadCount } = useNotificationCount()
 
   if (!user) return null
 
   const initials = (user.username || 'U').slice(0, 2).toUpperCase()
+
+  const NAV_ITEMS = [
+    { to: '/', icon: FolderIcon, label: 'Repositories', end: true },
+    { to: '/prs', icon: CodeBracketSquareIcon, label: 'Pull Requests' },
+    { to: '/notifications', icon: BellIcon, label: 'Notifications', badge: unreadCount },
+  ]
 
   return (
     <aside
@@ -51,21 +53,33 @@ export default function Sidebar({ collapsed, onToggle }) {
       </div>
 
       <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
-        {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
+        {NAV_ITEMS.map(({ to, icon: Icon, label, end, badge }) => (
           <NavLink
             key={to}
             to={to}
             end={end}
             className={({ isActive }) => cn(
-              'flex items-center gap-3 rounded-lg text-[13px] font-medium transition-colors',
+              'flex items-center gap-3 rounded-lg text-[13px] font-medium transition-colors relative',
               collapsed ? 'justify-center px-0 py-2.5 mx-auto w-10 h-10' : 'px-3 py-2',
               isActive
                 ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
                 : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/70 hover:text-zinc-900 dark:hover:text-zinc-200'
             )}
           >
-            <Icon className="h-[18px] w-[18px] flex-shrink-0" />
+            <span className="relative flex-shrink-0">
+              <Icon className="h-[18px] w-[18px]" />
+              {badge > 0 && collapsed && (
+                <span className="absolute -top-1.5 -right-1.5 h-4 min-w-4 px-1 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">
+                  {badge > 99 ? '99+' : badge}
+                </span>
+              )}
+            </span>
             {!collapsed && label}
+            {!collapsed && badge > 0 && (
+              <span className="ml-auto h-5 min-w-5 px-1.5 rounded-full bg-indigo-500 text-white text-[11px] font-bold flex items-center justify-center">
+                {badge > 99 ? '99+' : badge}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>
