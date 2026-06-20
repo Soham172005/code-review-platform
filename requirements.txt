@@ -7,6 +7,10 @@ djangorestframework-simplejwt
 celery[redis]
 GitPython
 social-auth-app-django
+gunicorn
+anthropic
+sentry-sdk[django]
+structlog
 
 # Dev / test
 pytest-django

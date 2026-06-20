@@ -817,3 +817,188 @@ pytest
 | `notifications/tests.py` | 14 | List/filter, mark read own/others/nonexistent, mark all read, SSE auth required/invalid/valid, signals: comment/review/transition create notifications, no self-notification |
 
 20 frontend tests unchanged (all passing).
+
+---
+
+## Phase 5 — Completed (Session 5)
+
+Docker containerization, AI reviewer, observability, CI/CD, demo data, and final verification.
+
+---
+
+### Docker
+
+#### Production (`docker-compose.prod.yml`)
+
+6 services: `web` (gunicorn), `celery`, `celery-beat`, `frontend` (nginx), `postgres`, `redis`. Multi-stage Dockerfiles (`Dockerfile`, `frontend/Dockerfile`). nginx reverse proxy serves React + proxies `/api/*` to Django, with SSE buffering disabled. Health checks on postgres and redis with `condition: service_healthy`.
+
+#### Development (`docker-compose.dev.yml`)
+
+5 services with volume mounts for hot-reload:
+
+| Service | Image | Port | Volume Mount |
+|---------|-------|------|-------------|
+| web | `Dockerfile.dev` (python:3.11-slim) | 8000 | `.:/app` |
+| celery | `Dockerfile.dev` | — | `.:/app` |
+| frontend | `frontend/Dockerfile.dev` (node:20-alpine) | 5173 | `./frontend:/app` + anonymous `/app/node_modules` |
+| postgres | postgres:15-alpine | 5432 | named volume |
+| redis | redis:7-alpine | 6379 | named volume |
+
+Start everything: `docker compose -f docker-compose.dev.yml up --build`
+
+The frontend Vite proxy target is configurable via `VITE_API_TARGET` env var (defaults to `http://127.0.0.1:8000` for local dev, set to `http://web:8000` in Docker).
+
+#### nginx (`frontend/nginx.conf`)
+
+- Serves React static files with `try_files $uri $uri/ /index.html`
+- Proxies `/api/*` to `http://web:8000`
+- SSE endpoint has `proxy_buffering off`, `proxy_read_timeout 86400s`
+- Static assets cached 1 year with `Cache-Control: public, immutable`
+- gzip enabled
+
+---
+
+### AI Code Reviewer
+
+#### How It Works
+
+`repos/ai_reviewer.py` contains two reviewer classes:
+
+| Class | When Used | Description |
+|-------|-----------|-------------|
+| `AIReviewer` | `AI_REVIEW_ENABLED=True` | Calls Claude API (`claude-sonnet-4-6`) with structured JSON output |
+| `MockAIReviewer` | `AI_REVIEW_MOCK=True` | Returns 3 hardcoded comments (warning, info, error) — no API call |
+
+#### Settings (`base.py`)
+
+| Setting | Source | Default | Description |
+|---------|--------|---------|-------------|
+| `ANTHROPIC_API_KEY` | env var | `""` | Claude API key |
+| `AI_REVIEW_ENABLED` | derived | `bool(ANTHROPIC_API_KEY)` | True only when API key is set |
+| `AI_REVIEW_MOCK` | env var | `False` | Use mock reviewer (no API key needed) |
+
+#### Behavior Matrix
+
+| `AI_REVIEW_ENABLED` | `AI_REVIEW_MOCK` | Result |
+|---------------------|------------------|--------|
+| True | False | Real Claude API review |
+| True | True | Mock review (mock takes precedence) |
+| False | True | Mock review |
+| False | False | Skipped — logs info message, no error |
+
+#### Trigger
+
+`PRTransitionView` calls `run_ai_review.delay(pr.pk)` when a PR transitions to `open`. The task:
+1. Checks settings — skips gracefully if neither enabled nor mock
+2. Gets DiffFiles for the PR — skips if none exist
+3. Calls the appropriate reviewer (real or mock)
+4. Creates/gets an `ai-reviewer` bot user (role=reviewer)
+5. Creates a `Review` (approved if no errors, changes_requested if any error-severity comment)
+6. Creates `ReviewComment` objects with `[SEVERITY] body` format
+
+---
+
+### Observability
+
+**Sentry** — `sentry_sdk.init()` in `base.py`, conditional on `SENTRY_DSN` env var. 10% trace sampling.
+
+**structlog** — `ConsoleRenderer` in dev, `JSONRenderer` in prod. All Celery tasks use structured logging.
+
+---
+
+### CI/CD (`.github/workflows/ci.yml`)
+
+| Job | Runs On | Services | Steps |
+|-----|---------|----------|-------|
+| test-backend | ubuntu-latest | postgres:15 + redis:7 | pip install → migrate → pytest |
+| test-frontend | ubuntu-latest | — | npm ci → npm test |
+| build-and-push | ubuntu-latest | — | Build + push Docker images to GHCR (main only) |
+
+---
+
+### Seed Demo Data
+
+```bash
+python manage.py seed_demo
+# or inside Docker:
+docker compose -f docker-compose.dev.yml exec web python manage.py seed_demo
+```
+
+Idempotent (`get_or_create` everywhere). Creates:
+
+| Entity | Details |
+|--------|---------|
+| `demo` user | role=author, password=`demopass123` |
+| `reviewer1` user | role=reviewer, password=`reviewpass123` |
+| `ai-reviewer` bot | role=reviewer, system account |
+| Repository | `demo-project` owned by demo |
+| Pull Request | "Add input validation to login flow", status=draft |
+| Commit | 1 commit with 3 DiffFiles |
+| DiffFiles | `auth/views.py` (modified), `auth/validators.py` (added), `auth/tests.py` (modified) |
+
+**Demo workflow:** seed → login as demo → transition PR to open → AI mock reviewer posts 3 inline comments automatically.
+
+---
+
+### Tests
+
+96 backend + 20 frontend = **116 tests total**. Run with:
+```bash
+# Backend
+pytest
+# or inside Docker:
+docker compose -f docker-compose.dev.yml exec web pytest -q
+
+# Frontend
+cd frontend && npm test
+```
+
+| File | Tests | Covers |
+|------|-------|--------|
+| `repos/tests/test_diff_parser.py` | 29 | Git diff parser |
+| `repos/tests/test_api.py` | 20 | Repos CRUD, PR CRUD, diff view, FSM transitions, history |
+| `repos/tests/test_webhooks.py` | 11 | HMAC, push/PR/review webhook handlers |
+| `repos/tests/test_ai_reviewer.py` | 5 | Mock mode creates comments, severities, graceful skip |
+| `reviews/tests.py` | 13 | Submit review (RBAC), comments, threading, resolve |
+| `users/tests.py` | 11 | Registration, token, logout, me, RBAC roles |
+| `notifications/tests.py` | 14 | List/filter, mark read, SSE auth, signals |
+| Frontend (5 files) | 20 | Auth, StatusBadge, DiffViewer, CommentThread, LoginPage |
+
+---
+
+### Dependencies Added in Phase 5
+
+- `gunicorn` — WSGI server for production
+- `anthropic` — Claude API SDK for AI reviews
+- `sentry-sdk[django]` — error tracking
+- `structlog` — structured logging
+
+---
+
+### Known Gaps (addressed in Phase 6)
+
+- `/prs` frontend route still shows "Coming soon" placeholder
+- Split-view toggle in diff viewer is UI-only
+- `django-fsm` permission hooks not yet wired
+- Real GitHub repository ingestion (clone + diff) — Phase 6
+- File upload — deferred
+
+---
+
+## Phase 6 — Planned (next session)
+
+Real GitHub repository ingestion via GitPython clone-and-diff.
+
+### Scope
+
+- **Git clone service** — clone public/private repos to a temp directory, parse commits and diffs using GitPython
+- **Import PR endpoint** — `POST /api/repos/{id}/import-pr/` accepts a GitHub PR URL, fetches the branch diff, creates PullRequest + Commit + DiffFile records from the real git data
+- **Frontend import modal** — button on repo page to paste a GitHub PR URL and trigger import
+- **Public vs private repos** — public repos clone directly; private repos require a GitHub token (stored per-user or per-repo)
+- **Cleanup** — temp cloned directories are removed after parsing
+
+### Not in Phase 6
+
+- GitHub App installation flow
+- Automatic webhook-triggered imports (already have webhook infra, but auto-import is Phase 7+)
+- PR synchronization (re-import on new commits)

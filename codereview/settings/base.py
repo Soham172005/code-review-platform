@@ -1,6 +1,9 @@
+import logging.config
 from datetime import timedelta
 from pathlib import Path
 
+import sentry_sdk
+import structlog
 from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -159,3 +162,37 @@ GITHUB_WEBHOOK_SECRET = config("GITHUB_WEBHOOK_SECRET", default="dev-secret")
 
 # Email
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@codereview.local")
+
+# AI Reviewer
+ANTHROPIC_API_KEY = config("ANTHROPIC_API_KEY", default="")
+AI_REVIEW_ENABLED = bool(ANTHROPIC_API_KEY)
+AI_REVIEW_MOCK = config("AI_REVIEW_MOCK", default="False", cast=bool)
+
+# Sentry
+_sentry_dsn = config("SENTRY_DSN", default="")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        environment=config("DJANGO_ENV", default="development"),
+        traces_sample_rate=0.1,
+    )
+
+# structlog
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.stdlib.BoundLogger,
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    cache_logger_on_first_use=True,
+)

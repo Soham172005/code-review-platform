@@ -129,6 +129,12 @@ class PRTransitionView(APIView):
             to_status=pr.status,
             actor=request.user,
         )
+
+        if pr.status == "open":
+            from repos.tasks import run_ai_review
+
+            run_ai_review.delay(pr.pk)
+
         return Response(PullRequestSerializer(pr).data)
 
 
