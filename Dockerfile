@@ -9,6 +9,11 @@ RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
 # Stage 2: Runtime
 FROM python:3.11-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV GIT_PYTHON_REFRESH=quiet
+
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 COPY --from=builder /install /usr/local

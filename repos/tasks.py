@@ -47,6 +47,96 @@ def process_webhook_event(event_type, payload):
 
 
 @shared_task
+def import_real_pr(repo_id, base_branch, head_branch, user_id, pr_title, pr_description=""):
+    from django.contrib.auth import get_user_model
+    from django.utils import timezone
+
+    from repos.git_ingestion import GitIngestionError, GitIngestionService
+    from repos.models import Commit, DiffFile, PullRequest, Repository
+
+    User = get_user_model()
+    log.info("task_started", task="import_real_pr", repo_id=repo_id, base=base_branch, head=head_branch)
+
+    repo = Repository.objects.get(pk=repo_id)
+    user = User.objects.get(pk=user_id)
+
+    github_token = None
+    try:
+        from social_django.models import UserSocialAuth
+        social = UserSocialAuth.objects.filter(user=user, provider="github").first()
+        if social and social.extra_data:
+            github_token = social.extra_data.get("access_token")
+    except Exception:
+        pass
+
+    service = GitIngestionService()
+    try:
+        result = service.import_pr_from_branches(repo.github_url, base_branch, head_branch, github_token)
+    except GitIngestionError as exc:
+        log.error("import_real_pr_failed", repo_id=repo_id, error=str(exc))
+        raise
+
+    pr = PullRequest.objects.create(
+        repo=repo,
+        title=pr_title,
+        description=pr_description,
+        author=user,
+        base_branch=base_branch,
+        head_branch=head_branch,
+        status="open",
+    )
+
+    commits_data = result["commits"]
+    if not commits_data:
+        commits_data = [{
+            "sha": "0" * 40,
+            "message": f"Diff: {base_branch}...{head_branch}",
+            "committed_at": timezone.now().isoformat(),
+            "author_name": user.username,
+        }]
+
+    first_commit = None
+    for c in commits_data:
+        committed_at = c["committed_at"]
+        if isinstance(committed_at, str):
+            from django.utils.dateparse import parse_datetime
+            committed_at = parse_datetime(committed_at) or timezone.now()
+
+        commit, created = Commit.objects.get_or_create(
+            pr=pr,
+            sha=c["sha"],
+            defaults={
+                "message": c["message"],
+                "author": user,
+                "committed_at": committed_at,
+            },
+        )
+        if first_commit is None:
+            first_commit = commit
+
+    for df in result["diff_files"]:
+        DiffFile.objects.create(
+            commit=first_commit,
+            file_path=df["file_path"],
+            change_type=df["change_type"],
+            patch=df["hunks"],
+        )
+
+    log.info(
+        "import_real_pr_success",
+        pr_id=pr.pk,
+        commits=len(commits_data),
+        diff_files=len(result["diff_files"]),
+    )
+
+    from django.conf import settings
+    if settings.AI_REVIEW_ENABLED or settings.AI_REVIEW_MOCK:
+        run_ai_review.delay(pr.pk)
+
+    return pr.pk
+
+
+@shared_task
 def run_ai_review(pr_id):
     from django.conf import settings
     from django.contrib.auth import get_user_model

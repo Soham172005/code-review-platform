@@ -52,6 +52,13 @@ class DiffFileSerializer(serializers.ModelSerializer):
         fields = ["id", "file_path", "change_type", "patch"]
 
 
+class ImportPRSerializer(serializers.Serializer):
+    base_branch = serializers.CharField(max_length=255, default="main")
+    head_branch = serializers.CharField(max_length=255)
+    title = serializers.CharField(max_length=255)
+    description = serializers.CharField(required=False, default="", allow_blank=True)
+
+
 class CommitSerializer(serializers.ModelSerializer):
     author = serializers.ReadOnlyField(source="author.username")
     diff_files = DiffFileSerializer(many=True, read_only=True)

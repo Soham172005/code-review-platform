@@ -975,30 +975,155 @@ cd frontend && npm test
 
 ---
 
-### Known Gaps (addressed in Phase 6)
+### Known Gaps (Future Phases)
 
 - `/prs` frontend route still shows "Coming soon" placeholder
 - Split-view toggle in diff viewer is UI-only
 - `django-fsm` permission hooks not yet wired
-- Real GitHub repository ingestion (clone + diff) — Phase 6
 - File upload — deferred
+- GitHub App installation flow
+- Automatic webhook-triggered imports (already have webhook infra)
+- PR synchronization (re-import on new commits)
 
 ---
 
-## Phase 6 — Planned (next session)
+## Phase 6 — Completed (Session 6)
 
 Real GitHub repository ingestion via GitPython clone-and-diff.
 
-### Scope
+---
 
-- **Git clone service** — clone public/private repos to a temp directory, parse commits and diffs using GitPython
-- **Import PR endpoint** — `POST /api/repos/{id}/import-pr/` accepts a GitHub PR URL, fetches the branch diff, creates PullRequest + Commit + DiffFile records from the real git data
-- **Frontend import modal** — button on repo page to paste a GitHub PR URL and trigger import
-- **Public vs private repos** — public repos clone directly; private repos require a GitHub token (stored per-user or per-repo)
-- **Cleanup** — temp cloned directories are removed after parsing
+### Git Ingestion Service (`repos/git_ingestion.py`)
 
-### Not in Phase 6
+`GitIngestionService` clones a real GitHub repo, computes the diff between two branches, and returns structured data ready for storage.
 
-- GitHub App installation flow
-- Automatic webhook-triggered imports (already have webhook infra, but auto-import is Phase 7+)
-- PR synchronization (re-import on new commits)
+**How it works:**
+1. Shallow clone (`depth=50`) to a temp directory via `Repo.clone_from`
+2. For private repos, injects GitHub token into clone URL (`https://{token}@github.com/...`)
+3. Verifies both base and head branches exist (`git rev-parse --verify origin/{branch}`)
+4. Computes three-dot diff: `git diff origin/base...origin/head`
+5. Gets commit list: `git log origin/base..origin/head`
+6. Runs the existing `GitDiffParser` on the raw diff
+7. Returns `{ commits, diff_files, base_branch, head_branch, raw_diff }`
+8. **Always** cleans up the temp directory in a `finally` block
+
+**Custom exceptions:**
+- `GitIngestionError` — base class
+- `CloneError` — repository clone failed
+- `BranchNotFoundError` — specified branch doesn't exist
+- `AuthenticationError` — token missing or invalid for private repo
+
+---
+
+### Celery Task (`repos/tasks.py`)
+
+`import_real_pr(repo_id, base_branch, head_branch, user_id, pr_title, pr_description)`:
+1. Fetches the Repository and User
+2. Checks for GitHub OAuth token via `social_django.UserSocialAuth` (for private repos)
+3. Calls `GitIngestionService.import_pr_from_branches()`
+4. Creates `PullRequest` (status=open), `Commit` records, `DiffFile` records with parsed patch JSON
+5. Triggers `run_ai_review` if AI review is enabled/mocked
+6. Uses structlog for structured logging at each stage
+7. On `GitIngestionError`, logs and re-raises (caught by the view for error response)
+
+---
+
+### Import PR Endpoint
+
+`POST /api/repos/{repo_id}/import-pr/`
+
+**Request body:**
+```json
+{
+  "base_branch": "main",
+  "head_branch": "feature-x",
+  "title": "Review: feature branch changes",
+  "description": "Optional description"
+}
+```
+
+**Responses:**
+- `201 Created` — PR created (synchronous in dev with `CELERY_TASK_ALWAYS_EAGER`)
+- `202 Accepted` — task queued (async in prod)
+- `400 Bad Request` — validation error or `GitIngestionError` (branch not found, auth failure, etc.)
+- `401 Unauthorized` — no JWT token
+
+**Serializer:** `ImportPRSerializer` — validates `head_branch` (required), `title` (required), `base_branch` (default "main"), `description` (optional).
+
+---
+
+### Frontend Import Modal (`PRListPage.jsx`)
+
+**"Import from GitHub" button** in the PR list page header (outlined indigo, next to the existing "New PR" button).
+
+Opens a modal with fields:
+- **Title** (required)
+- **Description** (optional)
+- **Base branch** (default "main")
+- **Head branch** (required)
+
+Submit → `POST /api/repos/{repoId}/import-pr/`
+- Loading spinner with "Cloning repository and parsing diff..." text
+- On success → toast notification + navigate to new PR detail page
+- On error → error toast with detail message
+
+**API function:** `importPR(repoId, data)` added to `frontend/src/api/index.js`.
+
+---
+
+### Tests
+
+109 backend + 20 frontend = **129 tests total**. Run with:
+```bash
+# Backend
+pytest
+# Frontend
+cd frontend && npm test
+```
+
+| File | Tests | Covers |
+|------|-------|--------|
+| `repos/tests/test_diff_parser.py` | 29 | Git diff parser |
+| `repos/tests/test_api.py` | 20 | Repos CRUD, PR CRUD, diff view, FSM transitions, history |
+| `repos/tests/test_webhooks.py` | 11 | HMAC, push/PR/review webhook handlers |
+| `repos/tests/test_ai_reviewer.py` | 5 | Mock mode creates comments, severities, graceful skip |
+| `repos/tests/test_git_ingestion.py` | 13 | Clone URL building, import success, cleanup on success/failure, clone/auth/branch errors, API endpoint CRUD + auth + validation |
+| `reviews/tests.py` | 13 | Submit review (RBAC), comments, threading, resolve |
+| `users/tests.py` | 11 | Registration, token, logout, me, RBAC roles |
+| `notifications/tests.py` | 14 | List/filter, mark read, SSE auth, signals |
+| Frontend (5 files) | 20 | Auth, StatusBadge, DiffViewer, CommentThread, LoginPage |
+
+---
+
+### How to Import a Real PR
+
+```bash
+# 1. Create a repo with a real github_url (via API or admin)
+# 2. Call the import endpoint:
+curl -X POST http://localhost:8000/api/repos/{id}/import-pr/ \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Review changes", "base_branch": "main", "head_branch": "feature"}'
+
+# Or use the frontend: click "Import from GitHub" on the PR list page
+```
+
+**Requirements:**
+- The repository's `github_url` must point to a valid GitHub repo
+- Public repos work without authentication
+- Private repos require the user to have linked their GitHub account via OAuth (token from `social_django.UserSocialAuth`)
+
+---
+
+### Files Added/Modified in Phase 6
+
+| File | Action | Description |
+|------|--------|-------------|
+| `repos/git_ingestion.py` | Added | GitIngestionService + custom exceptions |
+| `repos/tasks.py` | Modified | Added `import_real_pr` task |
+| `repos/serializers.py` | Modified | Added `ImportPRSerializer` |
+| `repos/views.py` | Modified | Added `ImportPRView` |
+| `repos/urls.py` | Modified | Added `import-pr/` route |
+| `repos/tests/test_git_ingestion.py` | Added | 13 tests for ingestion + endpoint |
+| `frontend/src/api/index.js` | Modified | Added `importPR()` |
+| `frontend/src/pages/PRListPage.jsx` | Modified | Added Import button + modal |

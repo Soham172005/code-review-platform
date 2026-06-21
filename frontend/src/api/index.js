@@ -117,4 +117,8 @@ export const markNotificationRead = (id) =>
 export const markAllNotificationsRead = () =>
   api.post('/notifications/mark-all-read/')
 
+// Import PR from GitHub
+export const importPR = (repoId, data) =>
+  api.post(`/repos/${repoId}/import-pr/`, data)
+
 export default api

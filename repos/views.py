@@ -14,6 +14,7 @@ from users.permissions import IsReviewerOrAdmin
 from .models import PRTransitionHistory, PullRequest, Repository
 from .serializers import (
     CommitSerializer,
+    ImportPRSerializer,
     PRTransitionHistorySerializer,
     PRTransitionSerializer,
     PullRequestSerializer,
@@ -144,6 +145,50 @@ class PRTransitionHistoryView(generics.ListAPIView):
 
     def get_queryset(self):
         return PRTransitionHistory.objects.filter(pr_id=self.kwargs["pk"])
+
+
+class ImportPRView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, repo_id):
+        from django.conf import settings
+
+        from repos.git_ingestion import GitIngestionError
+        from repos.tasks import import_real_pr
+
+        repo = get_object_or_404(Repository, pk=repo_id)
+        serializer = ImportPRSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        task_kwargs = dict(
+            repo_id=repo.pk,
+            base_branch=serializer.validated_data["base_branch"],
+            head_branch=serializer.validated_data["head_branch"],
+            user_id=request.user.pk,
+            pr_title=serializer.validated_data["title"],
+            pr_description=serializer.validated_data.get("description", ""),
+        )
+
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            try:
+                pr_id = import_real_pr(**task_kwargs)
+            except GitIngestionError as exc:
+                return Response(
+                    {"detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            pr = PullRequest.objects.get(pk=pr_id)
+            return Response(
+                PullRequestSerializer(pr).data,
+                status=status.HTTP_201_CREATED,
+            )
+
+        task = import_real_pr.delay(**task_kwargs)
+        return Response(
+            {"task_id": task.id, "status": "processing"},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class GitHubWebhookView(APIView):

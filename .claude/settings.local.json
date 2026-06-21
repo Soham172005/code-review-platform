@@ -12,7 +12,8 @@
       "Bash(npm test *)",
       "Bash(docker compose *)",
       "Bash(curl *)",
-      "PowerShell(docker compose *)"
+      "PowerShell(docker compose *)",
+      "Bash(npx vitest *)"
     ]
   }
 }

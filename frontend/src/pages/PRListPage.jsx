@@ -1,14 +1,14 @@
 import { useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listPRs, createPR, getRepo } from '../api'
+import { listPRs, createPR, getRepo, importPR } from '../api'
 import { relativeTime } from '../utils/dates'
 import Modal from '../components/Modal'
 import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import EmptyState from '../components/EmptyState'
 import { SkeletonRow } from '../components/Skeleton'
-import { PlusIcon, CodeBracketSquareIcon } from '@heroicons/react/24/outline'
+import { PlusIcon, CodeBracketSquareIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
 import { cn } from '../utils/classNames'
 import toast from 'react-hot-toast'
 
@@ -29,12 +29,18 @@ function filterPRs(prs, filter) {
 
 export default function PRListPage() {
   const { repoId } = useParams()
+  const navigate = useNavigate()
   const [showModal, setShowModal] = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
   const [filter, setFilter] = useState('all')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [baseBranch, setBaseBranch] = useState('main')
   const [headBranch, setHeadBranch] = useState('')
+  const [importTitle, setImportTitle] = useState('')
+  const [importDescription, setImportDescription] = useState('')
+  const [importBase, setImportBase] = useState('main')
+  const [importHead, setImportHead] = useState('')
   const queryClient = useQueryClient()
 
   const { data: repo } = useQuery({
@@ -62,6 +68,25 @@ export default function PRListPage() {
     },
   })
 
+  const importMut = useMutation({
+    mutationFn: (importData) => importPR(repoId, importData),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['prs', repoId] })
+      setShowImportModal(false)
+      setImportTitle('')
+      setImportDescription('')
+      setImportHead('')
+      setImportBase('main')
+      toast.success('Pull request imported from GitHub')
+      if (res.data?.id) {
+        navigate(`/prs/${res.data.id}`)
+      }
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || 'Failed to import PR')
+    },
+  })
+
   const handleCreate = (e) => {
     e.preventDefault()
     createMut.mutate({
@@ -69,6 +94,16 @@ export default function PRListPage() {
       description,
       base_branch: baseBranch,
       head_branch: headBranch,
+    })
+  }
+
+  const handleImport = (e) => {
+    e.preventDefault()
+    importMut.mutate({
+      title: importTitle,
+      description: importDescription,
+      base_branch: importBase,
+      head_branch: importHead,
     })
   }
 
@@ -83,13 +118,22 @@ export default function PRListPage() {
           { label: repo?.name || 'Repository' },
         ]}
         actions={
-          <button
-            onClick={() => setShowModal(true)}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-lg text-[13px] font-medium transition-colors"
-          >
-            <PlusIcon className="h-4 w-4" />
-            New PR
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="flex items-center gap-1.5 border border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 px-3.5 py-2 rounded-lg text-[13px] font-medium transition-colors"
+            >
+              <ArrowDownTrayIcon className="h-4 w-4" />
+              Import from GitHub
+            </button>
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-lg text-[13px] font-medium transition-colors"
+            >
+              <PlusIcon className="h-4 w-4" />
+              New PR
+            </button>
+          </div>
         }
       />
 
@@ -234,6 +278,69 @@ export default function PRListPage() {
               <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             )}
             {createMut.isPending ? 'Creating...' : 'Create Pull Request'}
+          </button>
+        </form>
+      </Modal>
+
+      <Modal open={showImportModal} onClose={() => setShowImportModal(false)} title="Import PR from GitHub">
+        <p className="text-[13px] text-zinc-500 dark:text-zinc-400 mb-4">
+          Clone the repository and import a real diff between two branches.
+        </p>
+        <form onSubmit={handleImport} className="space-y-4">
+          <div>
+            <label className="block text-[13px] font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Title</label>
+            <input
+              type="text"
+              value={importTitle}
+              onChange={(e) => setImportTitle(e.target.value)}
+              required
+              className="w-full border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 text-zinc-900 dark:text-zinc-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors"
+              placeholder="Review: feature branch changes"
+            />
+          </div>
+          <div>
+            <label className="block text-[13px] font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Description</label>
+            <textarea
+              value={importDescription}
+              onChange={(e) => setImportDescription(e.target.value)}
+              rows={2}
+              className="w-full border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 text-zinc-900 dark:text-zinc-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors resize-none"
+              placeholder="Optional description..."
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[13px] font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Base branch</label>
+              <input
+                type="text"
+                value={importBase}
+                onChange={(e) => setImportBase(e.target.value)}
+                required
+                className="w-full border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 text-zinc-900 dark:text-zinc-100 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors"
+                placeholder="main"
+              />
+            </div>
+            <div>
+              <label className="block text-[13px] font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Head branch</label>
+              <input
+                type="text"
+                value={importHead}
+                onChange={(e) => setImportHead(e.target.value)}
+                required
+                className="w-full border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 text-zinc-900 dark:text-zinc-100 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors"
+                placeholder="feature-branch"
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            disabled={importMut.isPending}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {importMut.isPending && (
+              <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            )}
+            {importMut.isPending ? 'Cloning repository and parsing diff...' : 'Import Pull Request'}
           </button>
         </form>
       </Modal>

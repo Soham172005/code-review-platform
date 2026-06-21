@@ -95,7 +95,7 @@ export default function DiffViewer({ diffFiles = [], comments = [], onLineClick,
             <div className="overflow-x-auto">
               <table className="w-full text-[13px] font-mono border-collapse">
                 <tbody>
-                  {(file.patch?.hunks || file.hunks || []).map((hunk, hunkIdx) => (
+                  {(Array.isArray(file.patch) ? file.patch : file.patch?.hunks || file.hunks || []).map((hunk, hunkIdx) => (
                     <HunkRows
                       key={hunkIdx}
                       hunk={hunk}
